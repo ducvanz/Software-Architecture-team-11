@@ -13,5 +13,5 @@ Về cấu trúc mỗi class có tối thiểu hàm khởi tạo và process v�
 
 ## hướng dẫn chạy
 1. cài môi trường
-python -m pip install -e .
+- pip install -r requirements.txt
 
