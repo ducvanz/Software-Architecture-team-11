@@ -8,9 +8,9 @@ class ConvertFilter:
     def __init__(self):
         pass
 
-    def process(self, image_path: str):
-        img = cv2.imread(image_path)
+    def process(self, image: str):
+        img = cv2.imread(image)
         if img is None:
-            raise ValueError(f"Không đọc được ảnh từ: {image_path}")
+            raise ValueError(f"Không đọc được ảnh từ: {image}")
 
         return img

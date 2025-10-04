@@ -2,6 +2,6 @@ class Watermark:
     def __init__(self):
         a = 1
     
-    def process(self, input_queue, output_queue):
+    def process(self, image):
         return 0
     
