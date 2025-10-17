@@ -11,6 +11,7 @@ from Filters.edge_detector import EdgeDetector
 from Filters.watermark import Watermark
 from Filters.output_filter import OutputFilter
 from Utils.image_loader import ImageLoader
+from Utils.constants import SENTINEL
 
 
 class ParallelPipeline:
@@ -22,7 +23,7 @@ class ParallelPipeline:
       - per-stage queues (bounded for backpressure)
       - n_workers per stage (elasticity)
       - per-stage metrics (count, errors, avg_latency)
-      - graceful shutdown and sentinel propagation (None)
+      - graceful shutdown and sentinel propagation (SENTINEL)
       - fault tolerance: exceptions in filter processing are caught and counted
     """
     def __init__(self, input_dir: str, output_dir: str, n_workers: int = 2, resize_shape=(256,256), queue_size: int = 8):
@@ -35,7 +36,7 @@ class ParallelPipeline:
         # Stage factories/instances (use callables to make per-worker instances)
         self.stage_factories = [
             lambda: ImageLoader(self.input_dir),                      # source (will use process(input_q, output_q))
-            lambda: ConvertFilter(),                                  # path -> ndarray
+            lambda: ConvertFilter(),                                  # envelope (path) -> envelope (ndarray)
             lambda: ResizeFilter(width=resize_shape[0], height=resize_shape[1], keep_aspect_ratio=True),
             lambda: GrayscaleBlur(ksize=5, sigmaX=1.2, keep_3_channels=False),
             lambda: EdgeDetector(method="canny"),
@@ -70,7 +71,7 @@ class ParallelPipeline:
             except Exception as e:
                 # record error and propagate sentinel so pipeline can finish
                 self.metrics[stage_idx]["errors"] += 1
-                self.queues[1].put(None)
+                self.queues[1].put(SENTINEL)
             return
 
         # Regular stage workers
@@ -81,9 +82,10 @@ class ParallelPipeline:
             except Exception:
                 continue
 
-            if item is None:
-                # propagate sentinel to next queue once per worker termination
-                self.queues[stage_idx+1].put(None)
+            # check sentinel (object) propagation
+            if item is SENTINEL:
+                # forward sentinel to next queue once per worker termination
+                self.queues[stage_idx+1].put(SENTINEL)
                 break
 
             # ensure each worker has own instance if factory callable
@@ -96,12 +98,15 @@ class ParallelPipeline:
                 elapsed = time.time() - start
                 self.metrics[stage_idx]["count"] += 1
                 self.metrics[stage_idx]["total_time"] += elapsed
-                # push result downstream (convert None -> sentinel)
-                self.queues[stage_idx+1].put(result)
+                # push result downstream (if result is SENTINEL treat accordingly)
+                if result is SENTINEL:
+                    self.queues[stage_idx+1].put(SENTINEL)
+                else:
+                    self.queues[stage_idx+1].put(result)
             except Exception:
                 self.metrics[stage_idx]["errors"] += 1
                 # On error, push sentinel downstream so we don't block consumers for this item
-                self.queues[stage_idx+1].put(None)
+                self.queues[stage_idx+1].put(SENTINEL)
 
     def start(self):
         # spawn threads: stage 0 has one thread (producer), other stages have n_workers each
@@ -124,7 +129,7 @@ class ParallelPipeline:
         # push sentinels to all queues to unblock
         for q in self.queues:
             try:
-                q.put_nowait(None)
+                q.put_nowait(SENTINEL)
             except Exception:
                 pass
         # join threads
