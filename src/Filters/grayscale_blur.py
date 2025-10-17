@@ -5,6 +5,7 @@
 import cv2
 
 class GrayscaleBlur:
+
     def __init__(self, ksize: int = 5, sigmaX: float = 1.2, keep_3_channels: bool = False):
         """
         ksize           : kích thước kernel Gaussian (số lẻ: 3/5/7/...)

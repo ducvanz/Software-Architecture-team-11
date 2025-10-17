@@ -1,12 +1,12 @@
 import os
 import threading
 from queue import Queue
-from ..Filters.converter import ConvertFilter
-from ..Filters.resize import ResizeFilter
-from ..Filters.output_filter import OutputFilter
-from ..Filters.grayscale_blur import GrayscaleBlur
-from ..Filters.edge_detector import EdgeDetector
-from ..Filters.watermark import Watermark
+from Filters.converter import ConvertFilter
+from Filters.resize import ResizeFilter
+from Filters.output_filter import OutputFilter
+from Filters.grayscale_blur import GrayscaleBlur
+from Filters.edge_detector import EdgeDetector
+from Filters.watermark import Watermark
 
 
 class ParallelPipeline:
