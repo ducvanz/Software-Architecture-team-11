@@ -1,9 +1,10 @@
 import cv2
+import numpy as np
 
 class ResizeFilter:
     """
-    Filter resize ảnh về kích thước mong muốn.
-    Kích thước target được cấu hình khi khởi tạo filter.
+    Resize filter (process(image) -> image).
+    If keep_aspect_ratio=True, scales to fit within provided width/height.
     """
     def __init__(self, width: int = None, height: int = None, keep_aspect_ratio: bool = True):
         self.width = width
@@ -16,24 +17,22 @@ class ResizeFilter:
 
         h, w = image.shape[:2]
 
-        # Nếu có giữ tỷ lệ
+        # If no target provided, return original
+        if self.width is None and self.height is None:
+            return image
+
         if self.keep_aspect_ratio:
-            if self.width is not None and self.height is None:
-                ratio = self.width / w
-                new_w, new_h = self.width, int(h * ratio)
-            elif self.height is not None and self.width is None:
-                ratio = self.height / h
-                new_w, new_h = int(w * ratio), self.height
-            elif self.width is not None and self.height is not None:
-                # ép cứng về width, height => có thể méo hình
-                new_w, new_h = self.width, self.height
+            if self.width is None:
+                scale = self.height / float(h)
+            elif self.height is None:
+                scale = self.width / float(w)
             else:
-                # không cấu hình thì giữ nguyên
-                return image
+                scale = min(self.width / float(w), self.height / float(h))
+            new_w = max(1, int(round(w * scale)))
+            new_h = max(1, int(round(h * scale)))
         else:
-            # Nếu không giữ tỷ lệ thì dùng width, height trực tiếp
-            new_w = self.width if self.width else w
-            new_h = self.height if self.height else h
+            new_w = self.width if self.width is not None else w
+            new_h = self.height if self.height is not None else h
 
         resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
         return resized

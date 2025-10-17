@@ -3,40 +3,57 @@
 # Gặp None thì chuyển tiếp None và dừng.
 
 import cv2
+import numpy as np
+from typing import Optional, Any
+
 
 class GrayscaleBlur:
-
+    """
+    Filter chuyển BGR -> grayscale -> Gaussian blur.
+    API đơn giản: process(image) -> image
+    Nếu keep_3_channels=True sẽ trả về ảnh 3 kênh (BGR) để đồng nhất với các filter phía sau.
+    """
     def __init__(self, ksize: int = 5, sigmaX: float = 1.2, keep_3_channels: bool = False):
-        """
-        ksize           : kích thước kernel Gaussian (số lẻ: 3/5/7/...)
-        sigmaX          : độ mờ theo trục X
-        keep_3_channels : True nếu muốn trả lại ảnh 3 kênh (GRAY->BGR) cho đồng nhất với các filter 3 kênh phía sau
-        """
+        # ensure odd kernel size
         if ksize % 2 == 0:
             ksize += 1
         self.ksize = (ksize, ksize)
-        self.sigmaX = sigmaX
-        self.keep_3_channels = keep_3_channels
+        self.sigmaX = float(sigmaX)
+        self.keep_3_channels = bool(keep_3_channels)
 
-    def process(self, input_queue, output_queue):
+    def process(self, image: Optional[Any]) -> Optional[np.ndarray]:
         """
-        Vòng lặp chuẩn của filter:
-        - get() item
-        - nếu item là None: chuyển tiếp None -> break
-        - xử lý item["image"] -> put(item) sang output_queue
+        Nhận 1 image (numpy.ndarray) ở định dạng BGR (H,W,3).
+        Trả về blurred image:
+          - nếu keep_3_channels=False: trả về (H,W) grayscale blurred
+          - nếu keep_3_channels=True: trả về (H,W,3) BGR (gray->BGR)
+        Nếu image is None -> trả về None.
         """
-        while True:
-            item = input_queue.get()
-            if item is None:
-                output_queue.put(None)   # truyền sentinel cho stage sau
-                break
+        if image is None:
+            return None
 
-            bgr = item["image"]                              # ảnh BGR
-            gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)     # (H, W)
-            blurred = cv2.GaussianBlur(gray, self.ksize, self.sigmaX)
+        img = np.array(image)  # đảm bảo ndarray (copy/view)
+        orig_dtype = getattr(img, "dtype", None)
 
-            if self.keep_3_channels:
-                blurred = cv2.cvtColor(blurred, cv2.COLOR_GRAY2BGR)
+        # Nếu input là 3 kênh BGR, convert sang grayscale
+        if img.ndim == 3 and img.shape[2] >= 3:
+            gray = cv2.cvtColor(img[..., :3], cv2.COLOR_BGR2GRAY)
+        elif img.ndim == 2:
+            gray = img
+        else:
+            # Không biết định dạng -> raise để dễ phát hiện lỗi trong pipeline
+            raise ValueError(f"Unsupported image shape for GrayscaleBlur: {img.shape}")
 
-            item["image"] = blurred
-            output_queue.put(item)
+        blurred = cv2.GaussianBlur(gray, self.ksize, self.sigmaX)
+
+        if self.keep_3_channels:
+            blurred = cv2.cvtColor(blurred, cv2.COLOR_GRAY2BGR)
+
+        # restore dtype if possible
+        if orig_dtype is not None:
+            try:
+                blurred = blurred.astype(orig_dtype)
+            except Exception:
+                pass
+
+        return blurred

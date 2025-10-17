@@ -1,121 +1,155 @@
 import os
+import time
 import threading
 from queue import Queue
+from typing import List, Any, Callable
+
 from Filters.converter import ConvertFilter
 from Filters.resize import ResizeFilter
-from Filters.output_filter import OutputFilter
 from Filters.grayscale_blur import GrayscaleBlur
 from Filters.edge_detector import EdgeDetector
 from Filters.watermark import Watermark
+from Filters.output_filter import OutputFilter
+from Utils.image_loader import ImageLoader
 
 
 class ParallelPipeline:
     """
-    Pipeline xử lý ảnh song song gồm nhiều Filter.
-    Dữ liệu đi qua: path → img → img → ... → output. img là mảng numpy (BGR).
+    Orchestrates stages (path-first):
+      ImageLoader -> ConvertFilter -> Resize -> GrayscaleBlur -> EdgeDetector -> Watermark -> OutputFilter
+
+    Features:
+      - per-stage queues (bounded for backpressure)
+      - n_workers per stage (elasticity)
+      - per-stage metrics (count, errors, avg_latency)
+      - graceful shutdown and sentinel propagation (None)
+      - fault tolerance: exceptions in filter processing are caught and counted
     """
-    def __init__(self, input_dir, output_dir, n_threads=2, resize_shape=(256, 256)):
+    def __init__(self, input_dir: str, output_dir: str, n_workers: int = 2, resize_shape=(256,256), queue_size: int = 8):
         self.input_dir = input_dir
         self.output_dir = output_dir
-        self.n_threads = n_threads
-        os.makedirs(output_dir, exist_ok=True)
+        self.n_workers = max(1, int(n_workers))
+        self.resize_shape = resize_shape
+        self.queue_size = max(1, int(queue_size))
 
-        # 6 queue cho tối đa 6 filter
-        self.queues = [Queue() for _ in range(6)]
-
-        # Định nghĩa pipeline — chỉ bật các filter cần thiết
-        self.filters = [
-            (ConvertFilter(), self.queues[0], self.queues[1]),       # path → image (BGR)
-            (ResizeFilter(resize_shape[0], resize_shape[1]), self.queues[1], self.queues[2]),  # image → image
-            # (GrayscaleBlur(), self.queues[2], self.queues[3]),      # image → image
-            # (EdgeDetector(), self.queues[3], self.queues[4]),       # image → image
-            # (Watermark("Team 11"), self.queues[4], self.queues[5]), # image → image
-            (OutputFilter(output_dir), self.queues[2], None)         # image → ghi file
+        # Stage factories/instances (use callables to make per-worker instances)
+        self.stage_factories = [
+            lambda: ImageLoader(self.input_dir),                      # source (will use process(input_q, output_q))
+            lambda: ConvertFilter(),                                  # path -> ndarray
+            lambda: ResizeFilter(width=resize_shape[0], height=resize_shape[1], keep_aspect_ratio=True),
+            lambda: GrayscaleBlur(ksize=5, sigmaX=1.2, keep_3_channels=False),
+            lambda: EdgeDetector(method="canny"),
+            lambda: Watermark(text="DemoWM", alpha=0.35),
+            lambda: OutputFilter(self.output_dir)
         ]
 
-        self.threads = []
-        print("Pipeline initialized: Convert → Resize → (optional filters) → Output")
+        self.num_stages = len(self.stage_factories)
+        # create queues between stages (num_stages + 1 endpoints)
+        self.queues = [Queue(maxsize=self.queue_size) for _ in range(self.num_stages + 1)]
+        # metrics per stage (processing happens in workers consuming queues[i] and putting to queues[i+1])
+        self.metrics = [{"count":0, "errors":0, "total_time":0.0} for _ in range(self.num_stages)]
+        self.threads: List[threading.Thread] = []
+        self._stop_event = threading.Event()
 
-    def start(self):
-        """Khởi động pipeline song song"""
-        input_paths = [
-            os.path.join(self.input_dir, f)
-            for f in os.listdir(self.input_dir)
-            if f.lower().endswith((".jpg", ".png", ".jpeg"))
-        ]
+    def _make_instance(self, factory):
+        try:
+            return factory()
+        except Exception:
+            return factory  # in case it's already an instance
 
-        print(f"Found {len(input_paths)} image(s) in {self.input_dir}")
-        for path in input_paths:
-            self.queues[0].put(path)
+    def _stage_worker(self, stage_idx: int, factory: Callable):
+        """
+        Worker: consumes from queues[stage_idx], applies filter.process, pushes to queues[stage_idx+1].
+        Special-case: stage 0 is ImageLoader.process(input_q, output_q) which expects to be run as a producer.
+        """
+        if stage_idx == 0:
+            # Source: run loader with input_queue ignored
+            loader = self._make_instance(factory)
+            try:
+                loader.process(None, self.queues[1])
+            except Exception as e:
+                # record error and propagate sentinel so pipeline can finish
+                self.metrics[stage_idx]["errors"] += 1
+                self.queues[1].put(None)
+            return
 
-        # Tạo thread cho từng filter
-        for filter_obj, input_q, output_q in self.filters:
-            for _ in range(self.n_threads):
-                t = threading.Thread(
-                    target=self._worker,
-                    args=(filter_obj, input_q, output_q),
-                    daemon=True
-                )
-                self.threads.append(t)
-                t.start()
+        # Regular stage workers
+        filter_obj = None
+        while not self._stop_event.is_set():
+            try:
+                item = self.queues[stage_idx].get()
+            except Exception:
+                continue
 
-        # Gửi tín hiệu kết thúc cho ConvertFilter
-        for _ in range(self.n_threads):
-            self.queues[0].put(None)
-
-        # Chờ toàn bộ thread kết thúc
-        for t in self.threads:
-            t.join()
-
-        print("Pipeline completed successfully!")
-
-    def _worker(self, filter_obj, input_q, output_q):
-        """Luồng xử lý riêng cho mỗi filter"""
-        while True:
-            item = input_q.get()
             if item is None:
-                if output_q:
-                    output_q.put(None)
-                input_q.task_done()
+                # propagate sentinel to next queue once per worker termination
+                self.queues[stage_idx+1].put(None)
                 break
 
+            # ensure each worker has own instance if factory callable
+            if filter_obj is None:
+                filter_obj = self._make_instance(factory)
+
+            start = time.time()
             try:
-                # ConvertFilter: nhận path
-                if isinstance(filter_obj, ConvertFilter):
-                    result = filter_obj.process(item)
+                result = filter_obj.process(item)
+                elapsed = time.time() - start
+                self.metrics[stage_idx]["count"] += 1
+                self.metrics[stage_idx]["total_time"] += elapsed
+                # push result downstream (convert None -> sentinel)
+                self.queues[stage_idx+1].put(result)
+            except Exception:
+                self.metrics[stage_idx]["errors"] += 1
+                # On error, push sentinel downstream so we don't block consumers for this item
+                self.queues[stage_idx+1].put(None)
 
-                # OutputFilter: nhận ảnh, ghi ra file
-                elif isinstance(filter_obj, OutputFilter):
-                    filter_obj.process(item)
-                    result = None
+    def start(self):
+        # spawn threads: stage 0 has one thread (producer), other stages have n_workers each
+        # Stage 0 --> index 1 queue (loader puts to queues[1]); we keep queues[0] unused for symmetry
+        # launch producer (stage 0)
+        t = threading.Thread(target=self._stage_worker, args=(0, self.stage_factories[0]), daemon=True)
+        t.start()
+        self.threads.append(t)
 
-                # Các filter còn lại: nhận ảnh, trả ảnh
-                else:
-                    result = filter_obj.process(item)
+        # launch workers for other stages
+        for stage_idx in range(1, self.num_stages):
+            for w in range(self.n_workers):
+                t = threading.Thread(target=self._stage_worker, args=(stage_idx, self.stage_factories[stage_idx]), daemon=True)
+                t.start()
+                self.threads.append(t)
 
-                # Truyền qua filter kế tiếp nếu có output queue
-                if output_q and result is not None:
-                    output_q.put(result)
-
-            except Exception as e:
-                print(f"Error in {filter_obj.__class__.__name__}: {e}")
-            finally:
-                input_q.task_done()
-
-    def stop(self):
-        """Dừng pipeline thủ công (nếu cần)"""
+    def stop(self, timeout: float = 5.0):
+        # signal stop to threads (won't stop if blocked on queue.get unless sentinel arrives)
+        self._stop_event.set()
+        # push sentinels to all queues to unblock
         for q in self.queues:
-            while not q.empty():
-                q.get_nowait()
-        print("Pipeline stopped.")
+            try:
+                q.put_nowait(None)
+            except Exception:
+                pass
+        # join threads
+        for t in self.threads:
+            t.join(timeout)
+
+    def print_metrics(self):
+        lines = []
+        for idx, m in enumerate(self.metrics, start=1):
+            count = m["count"]
+            avg_latency = (m["total_time"] / count) if count else 0.0
+            lines.append(f"Stage {idx}: processed={count}, errors={m['errors']}, avg_latency={avg_latency:.4f}s")
+        print("\n".join(lines))
 
 
 if __name__ == "__main__":
-    pipeline = ParallelPipeline(
-        input_dir="data/input",
-        output_dir="data/output",
-        n_threads=2,
-        resize_shape=(500, 500)
-    )
-    pipeline.start()
+    # quick local run (ensure data/input has images)
+    p = ParallelPipeline(input_dir="data/input", output_dir="data/output", n_workers=2, resize_shape=(300,300))
+    p.start()
+    try:
+        # wait until threads finish (monitoring)
+        while any(t.is_alive() for t in p.threads):
+            time.sleep(1.0)
+            p.print_metrics()
+    except KeyboardInterrupt:
+        p.stop()
+    p.print_metrics()
 
