@@ -5,9 +5,7 @@ from typing import Any, Dict
 
 class OutputFilterV2:
     """
-    Saves envelope.payload (ndarray) to output_dir.
-    envelope may include meta.filename or payload originally came from path -> filename will be preserved.
-    Returns envelope with payload = saved_path.
+    Save envelope.payload to disk. Returns envelope with payload = saved_path.
     """
     def __init__(self, output_dir: str):
         self.output_dir = os.path.abspath(output_dir)
@@ -18,19 +16,17 @@ class OutputFilterV2:
         img = env.get("payload")
         if img is None:
             raise ValueError("OutputFilterV2: payload is None")
-        # determine filename
         meta = env.get("meta", {})
         filename = meta.get("filename")
         if not filename:
-            # try to derive from orig_path
-            orig = meta.get("orig_path") or env.get("payload_path") or env.get("path")
+            orig = meta.get("orig_path") or meta.get("path") or env.get("path")
             if isinstance(orig, str):
                 filename = os.path.basename(orig)
             else:
                 filename = f"output_{uuid.uuid4().hex[:8]}.jpg"
         out_path = os.path.join(self.output_dir, filename)
-        success = cv2.imwrite(out_path, img)
-        if not success:
+        ok = cv2.imwrite(out_path, img)
+        if not ok:
             raise IOError(f"OutputFilterV2: failed to write {out_path}")
         env["payload"] = out_path
         env.setdefault("meta", {})

@@ -1,11 +1,11 @@
 import cv2
 import numpy as np
-from typing import Any, Dict, Tuple
+from typing import Any, Dict
 
 class ResizeFilterV2:
     """
-    Envelope in: payload = ndarray
-    Envelope out: payload = resized ndarray
+    Resize preserving aspect ratio by default.
+    Input/output: envelope.payload = ndarray
     """
     def __init__(self, width: int = None, height: int = None, keep_aspect_ratio: bool = True):
         self.width = width
@@ -17,25 +17,23 @@ class ResizeFilterV2:
         img = env.get("payload")
         if img is None:
             raise ValueError("ResizeFilterV2: payload is None")
-
         arr = np.array(img)
         h, w = arr.shape[:2]
 
         if self.width is None and self.height is None:
             resized = arr
         else:
-            if self.keep_aspect_ratio and self.width and self.height:
-                scale = min(self.width / float(w), self.height / float(h))
+            if self.keep_aspect_ratio:
+                if self.width and self.height:
+                    scale = min(self.width / float(w), self.height / float(h))
+                elif self.width:
+                    scale = self.width / float(w)
+                elif self.height:
+                    scale = self.height / float(h)
+                else:
+                    scale = 1.0
                 new_w = max(1, int(round(w * scale)))
                 new_h = max(1, int(round(h * scale)))
-            elif self.keep_aspect_ratio and self.width and not self.height:
-                scale = self.width / float(w)
-                new_w = self.width
-                new_h = max(1, int(round(h * scale)))
-            elif self.keep_aspect_ratio and self.height and not self.width:
-                scale = self.height / float(h)
-                new_h = self.height
-                new_w = max(1, int(round(w * scale)))
             else:
                 new_w = self.width or w
                 new_h = self.height or h

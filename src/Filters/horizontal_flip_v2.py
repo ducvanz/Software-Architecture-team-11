@@ -4,11 +4,9 @@ from typing import Any, Dict
 
 class HorizontalFlipV2:
     """
-    Envelope in/out: flips payload horizontally.
+    Flip payload horizontally.
+    Input/output: envelope with payload = ndarray
     """
-    def __init__(self):
-        pass
-
     def process(self, envelope: Any) -> Dict:
         env = dict(envelope) if isinstance(envelope, dict) else {"id": None, "payload": envelope, "meta": {}}
         img = env.get("payload")
