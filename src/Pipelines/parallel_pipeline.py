@@ -1,6 +1,7 @@
 import os
 import time
 import threading
+import traceback
 from queue import Queue
 from typing import List, Any, Callable
 
@@ -71,6 +72,8 @@ class ParallelPipeline:
             except Exception as e:
                 # record error and propagate sentinel so pipeline can finish
                 self.metrics[stage_idx]["errors"] += 1
+                print(f"[Stage 0] loader error: {e}")
+                traceback.print_exc()
                 self.queues[1].put(SENTINEL)
             return
 
@@ -86,6 +89,7 @@ class ParallelPipeline:
             if item is SENTINEL:
                 # forward sentinel to next queue once per worker termination
                 self.queues[stage_idx+1].put(SENTINEL)
+                self.queues[stage_idx].task_done()
                 break
 
             # ensure each worker has own instance if factory callable
@@ -94,19 +98,24 @@ class ParallelPipeline:
 
             start = time.time()
             try:
-                result = filter_obj.process(item)
+                result_env = filter_obj.process(item)
                 elapsed = time.time() - start
                 self.metrics[stage_idx]["count"] += 1
                 self.metrics[stage_idx]["total_time"] += elapsed
-                # push result downstream (if result is SENTINEL treat accordingly)
-                if result is SENTINEL:
-                    self.queues[stage_idx+1].put(SENTINEL)
-                else:
-                    self.queues[stage_idx+1].put(result)
-            except Exception:
+                self.queues[stage_idx+1].put(result_env)
+            except Exception as e:
                 self.metrics[stage_idx]["errors"] += 1
-                # On error, push sentinel downstream so we don't block consumers for this item
+                # log with id if available
+                item_id = item.get("id") if isinstance(item, dict) else None
+                print(f"[Stage {stage_idx}] Error processing item id={item_id}: {e}")
+                traceback.print_exc()
+                # push sentinel for downstream to avoid blocking
                 self.queues[stage_idx+1].put(SENTINEL)
+            finally:
+                try:
+                    self.queues[stage_idx].task_done()
+                except Exception:
+                    pass
 
     def start(self):
         # spawn threads: stage 0 has one thread (producer), other stages have n_workers each

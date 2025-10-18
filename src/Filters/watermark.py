@@ -1,12 +1,12 @@
 import cv2
 import numpy as np
-from typing import Optional, Any, Tuple
+from typing import Optional, Any, Tuple, Dict
 
 
 class Watermark:
     """
-    Add text watermark. process(image) -> image (3-channel BGR).
-    If input is grayscale (H,W) it will be converted to BGR before drawing.
+    Envelope in: payload = ndarray (gray or BGR)
+    Envelope out: payload = BGR ndarray with watermark blended
     """
     def __init__(
         self,
@@ -25,30 +25,34 @@ class Watermark:
         self.alpha = float(alpha)
         self.margin = int(margin)
 
-    def process(self, image: Optional[Any]) -> Optional[np.ndarray]:
-        if image is None:
-            return None
+    def process(self, envelope: Any) -> Dict:
+        if isinstance(envelope, dict) and "payload" in envelope:
+            env = envelope
+            img = env["payload"]
+        else:
+            img = envelope
+            env = {"id": None, "payload": img, "meta": {}}
 
-        img = np.array(image)
-        orig_dtype = getattr(img, "dtype", None)
+        if img is None:
+            raise ValueError("Watermark: payload is None")
 
-        if img.ndim == 2:
-            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-        elif img.ndim == 3 and img.shape[2] == 4:
-            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+        arr = np.array(img)
 
-        overlay = img.copy()
+        if arr.ndim == 2:
+            img_bgr = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
+        elif arr.ndim == 3 and arr.shape[2] == 4:
+            img_bgr = cv2.cvtColor(arr, cv2.COLOR_BGRA2BGR)
+        else:
+            img_bgr = arr
+
+        overlay = img_bgr.copy()
         (text_w, text_h), baseline = cv2.getTextSize(self.text, self.font, self.font_scale, self.thickness)
-        x = max(self.margin, img.shape[1] - text_w - self.margin)
-        y = max(text_h + self.margin, img.shape[0] - self.margin)
-
+        x = max(self.margin, img_bgr.shape[1] - text_w - self.margin)
+        y = max(text_h + self.margin, img_bgr.shape[0] - self.margin)
         cv2.putText(overlay, self.text, (x, y), self.font, self.font_scale, self.color, self.thickness, cv2.LINE_AA)
-        blended = cv2.addWeighted(overlay, self.alpha, img, 1.0 - self.alpha, 0)
+        blended = cv2.addWeighted(overlay, self.alpha, img_bgr, 1.0 - self.alpha, 0)
 
-        if orig_dtype is not None:
-            try:
-                blended = blended.astype(orig_dtype)
-            except Exception:
-                pass
-
-        return blended
+        env["payload"] = blended
+        env.setdefault("meta", {})
+        env["meta"]["stage"] = env["meta"].get("stage", 0) + 1
+        return env

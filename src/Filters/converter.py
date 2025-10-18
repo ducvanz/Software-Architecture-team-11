@@ -3,17 +3,16 @@ from typing import Any, Dict
 
 class ConvertFilter:
     """
-    Accepts envelope with payload = path (str).
-    Reads image via cv2.imread and returns envelope with payload = ndarray.
+    Envelope in: payload = path (str)
+    Envelope out: payload = ndarray (image)
     """
     def __init__(self):
         pass
 
     def process(self, envelope: Any) -> Dict:
-        # support legacy (if passed a raw path string)
+        # support raw path for legacy calls
         if isinstance(envelope, str):
-            path = envelope
-            env = {"id": path, "payload": path, "meta": {"attempts": 0, "stage": 0, "orig_path": path}}
+            env = {"id": envelope, "payload": envelope, "meta": {"attempts": 0, "stage": 0, "orig_path": envelope}}
         else:
             env = envelope
 
@@ -23,8 +22,9 @@ class ConvertFilter:
 
         img = cv2.imread(path)
         if img is None:
-            raise ValueError(f"Cannot read image from: {path}")
+            raise ValueError(f"ConvertFilter: cannot read image from: {path}")
 
         env["payload"] = img
+        env.setdefault("meta", {})
         env["meta"]["stage"] = env["meta"].get("stage", 0) + 1
         return env

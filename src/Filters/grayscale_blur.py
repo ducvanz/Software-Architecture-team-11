@@ -4,14 +4,13 @@
 
 import cv2
 import numpy as np
-from typing import Optional, Any
+from typing import Optional, Any, Dict
 
 
 class GrayscaleBlur:
     """
-    Filter chuyển BGR -> grayscale -> Gaussian blur.
-    API đơn giản: process(image) -> image
-    Nếu keep_3_channels=True sẽ trả về ảnh 3 kênh (BGR) để đồng nhất với các filter phía sau.
+    Envelope in: payload = ndarray (BGR or gray)
+    Envelope out: payload = blurred ndarray (gray by default)
     """
     def __init__(self, ksize: int = 5, sigmaX: float = 1.2, keep_3_channels: bool = False):
         # ensure odd kernel size
@@ -21,7 +20,7 @@ class GrayscaleBlur:
         self.sigmaX = float(sigmaX)
         self.keep_3_channels = bool(keep_3_channels)
 
-    def process(self, image: Optional[Any]) -> Optional[np.ndarray]:
+    def process(self, envelope: Any) -> Dict:
         """
         Nhận 1 image (numpy.ndarray) ở định dạng BGR (H,W,3).
         Trả về blurred image:
@@ -29,31 +28,34 @@ class GrayscaleBlur:
           - nếu keep_3_channels=True: trả về (H,W,3) BGR (gray->BGR)
         Nếu image is None -> trả về None.
         """
-        if image is None:
-            return None
+        if isinstance(envelope, dict) and "payload" in envelope:
+            env = envelope
+            img = env["payload"]
+        else:
+            img = envelope
+            env = {"id": None, "payload": img, "meta": {}}
 
-        img = np.array(image)  # đảm bảo ndarray (copy/view)
-        orig_dtype = getattr(img, "dtype", None)
+        if img is None:
+            raise ValueError("GrayscaleBlur: payload is None")
+
+        arr = np.array(img)  # đảm bảo ndarray (copy/view)
+        orig_dtype = getattr(arr, "dtype", None)
 
         # Nếu input là 3 kênh BGR, convert sang grayscale
-        if img.ndim == 3 and img.shape[2] >= 3:
-            gray = cv2.cvtColor(img[..., :3], cv2.COLOR_BGR2GRAY)
-        elif img.ndim == 2:
-            gray = img
+        if arr.ndim == 3 and arr.shape[2] >= 3:
+            gray = cv2.cvtColor(arr[..., :3], cv2.COLOR_BGR2GRAY)
+        elif arr.ndim == 2:
+            gray = arr
         else:
             # Không biết định dạng -> raise để dễ phát hiện lỗi trong pipeline
-            raise ValueError(f"Unsupported image shape for GrayscaleBlur: {img.shape}")
+            raise ValueError(f"Unsupported image shape for GrayscaleBlur: {arr.shape}")
 
         blurred = cv2.GaussianBlur(gray, self.ksize, self.sigmaX)
 
         if self.keep_3_channels:
             blurred = cv2.cvtColor(blurred, cv2.COLOR_GRAY2BGR)
 
-        # restore dtype if possible
-        if orig_dtype is not None:
-            try:
-                blurred = blurred.astype(orig_dtype)
-            except Exception:
-                pass
-
-        return blurred
+        env["payload"] = blurred
+        env.setdefault("meta", {})
+        env["meta"]["stage"] = env["meta"].get("stage", 0) + 1
+        return env

@@ -1,9 +1,14 @@
-# SENTINEL object để báo end-of-stream; dùng "is" để so sánh
+# SENTINEL object để báo end-of-stream; so sánh bằng "is"
 SENTINEL = object()
 
-# Envelope keys / contract (hints)
+# Envelope contract:
 # envelope = {
 #   "id": str,
-#   "payload": <path or ndarray>,
-#   "meta": {"attempts":0, "stage":0, "orig_path": "..."}
-# }
+#   "payload": <path | ndarray | other>,
+#   "meta": {
+#       "attempts": int,
+#       "stage": int,
+#       "orig_path": str,
+#       ...
+#   }
+#}
