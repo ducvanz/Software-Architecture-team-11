@@ -12,12 +12,15 @@ from Utils.constants import SENTINEL
 
 class ImageLoader:
     """
-    Source: pushes envelope with payload=path into output_queue, then SENTINEL.
+    Source: pushes envelope with payload=path into output_queue, then emits
+    SENTINEL equal to downstream_workers so all downstream workers exit cleanly.
     """
     def __init__(self, input_dir: str = "data/input",
-                 patterns: Optional[Iterable[str]] = None):
+                 patterns: Optional[Iterable[str]] = None,
+                 downstream_workers: int = 1):
         self.input_dir = input_dir
         self.patterns = list(patterns) if patterns else ["*.jpg", "*.jpeg", "*.png", "*.bmp"]
+        self.downstream_workers = max(1, int(downstream_workers))
 
     def process(self, input_queue: Queue, output_queue: Queue):
         # Push envelopes (path-first)
@@ -29,5 +32,6 @@ class ImageLoader:
                     "meta": {"attempts": 0, "stage": 0, "orig_path": fp}
                 }
                 output_queue.put(env)
-        # end-of-stream
-        output_queue.put(SENTINEL)
+        # emit one SENTINEL per downstream worker so all workers can exit
+        for _ in range(self.downstream_workers):
+            output_queue.put(SENTINEL)
