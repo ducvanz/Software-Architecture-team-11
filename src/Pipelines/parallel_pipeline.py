@@ -16,10 +16,12 @@ from Filters.output_filter_v2 import OutputFilterV2
 from Utils.image_loader import ImageLoader
 from Utils.constants import SENTINEL
 from Utils.metrics import MetricsCollector
+from Utils.retry import call_with_retry
+from Utils.dlq import write_dlq
 
 
 class ParallelPipeline:
-    def __init__(self, input_dir: str, output_dir: str, n_workers: int = 2, resize_shape=(256,256), queue_size: int = 8):
+    def __init__(self, input_dir: str, output_dir: str, n_workers: int = 2, resize_shape=(256,256), queue_size: int = 8, max_attempts: int = 3, retry_backoff: float = 0.2, dlq_dir: str = None):
         self.input_dir = input_dir
         self.output_dir = output_dir
         self.n_workers = max(1, int(n_workers))
@@ -36,40 +38,32 @@ class ParallelPipeline:
             lambda: WatermarkV2(text="DemoWM"),
             lambda: OutputFilterV2(self.output_dir)
         ]
-
         self.num_stages = len(self.stage_factories)
         self.queues = [Queue(maxsize=self.queue_size) for _ in range(self.num_stages + 1)]
         self.metrics = MetricsCollector(self.num_stages)
         self.threads: List[threading.Thread] = []
         self._stop_event = threading.Event()
+        self.max_attempts = int(max_attempts)
+        self.retry_backoff = float(retry_backoff)
+        self.dlq_dir = dlq_dir  # passed to write_dlq if provided
 
     def _make_instance(self, factory):
         try:
             return factory()
         except Exception:
-            return factory
+            return None
 
     def _stage_worker(self, stage_idx: int, factory: Callable):
-        """
+        """\
         stage_idx: 0 .. num_stages-1
         stage 0 is the ImageLoader (producer) which writes to queues[1]
         other stages consume from queues[stage_idx] and write to queues[stage_idx+1]
         """
-        if stage_idx == 0:
-            loader = self._make_instance(factory)
-            try:
-                loader.process(None, self.queues[1])
-            except Exception as e:
-                self.metrics.record_error(stage_idx)
-                print(f"[Stage 0] loader error: {e}")
-                traceback.print_exc()
-                # ensure downstream not blocked
-                self.queues[1].put(SENTINEL)
-            return
-
         filter_obj = None
         in_q = self.queues[stage_idx]
-        out_q = self.queues[stage_idx + 1]
+        # determine out_q only if a downstream consumer exists
+        out_q = self.queues[stage_idx + 1] if (stage_idx + 1) < len(self.queues) else None
+
         while not self._stop_event.is_set():
             try:
                 item = in_q.get()
@@ -77,8 +71,9 @@ class ParallelPipeline:
                 continue
 
             if item is SENTINEL:
-                # forward sentinel once and mark task done
-                out_q.put(SENTINEL)
+                # forward sentinel only if there is a downstream queue / consumer
+                if out_q is not None:
+                    out_q.put(SENTINEL)
                 try:
                     in_q.task_done()
                 except Exception:
@@ -90,18 +85,24 @@ class ParallelPipeline:
 
             start = time.time()
             try:
-                result_env = filter_obj.process(item)
+                # use retry wrapper which mutates envelope['meta']['attempts']
+                result_env = call_with_retry(filter_obj.process, item, max_attempts=self.max_attempts, backoff=self.retry_backoff)
                 elapsed = time.time() - start
                 self.metrics.record_success(stage_idx, elapsed)
-                # push downstream
-                out_q.put(result_env)
+                if out_q is not None:
+                    out_q.put(result_env)
             except Exception as e:
+                # NO sentinel push on per-item processing error anymore
                 self.metrics.record_error(stage_idx)
                 item_id = item.get("id") if isinstance(item, dict) else None
-                print(f"[Stage {stage_idx}] Error processing item id={item_id}: {e}")
-                traceback.print_exc()
-                # push sentinel downstream for this worker to avoid blocking (keeps pipeline progressing)
-                out_q.put(SENTINEL)
+                trace = traceback.format_exc()
+                print(f"[Stage {stage_idx}] Error processing item id={item_id}: {e}\n{trace}")
+                # write DLQ entry (best-effort)
+                try:
+                    write_dlq(item, str(e), exc_trace=trace, dlq_dir=self.dlq_dir)
+                except Exception as dlq_e:
+                    print(f"[Pipeline] Failed to write DLQ: {dlq_e}")
+                # continue to next item (do not push sentinel)
             finally:
                 try:
                     in_q.task_done()
@@ -113,7 +114,6 @@ class ParallelPipeline:
         t = threading.Thread(target=self._stage_worker, args=(0, self.stage_factories[0]), daemon=True)
         t.start()
         self.threads.append(t)
-
         # worker threads for other stages
         for stage_idx in range(1, self.num_stages):
             for w in range(self.n_workers):
@@ -144,15 +144,15 @@ class ParallelPipeline:
 
     def wait_for_completion(self, timeout: float = None):
         """
-        Block until all queued tasks are marked done (queue.join) for all inter-stage queues.
-        After that, join worker threads (short timeout) and return.
+        Block until all queued tasks are marked done for queues that have consumers.
+        We only join queues[1:self.num_stages] because queues[num_stages] is the sink buffer with no consumer.
         """
         start = time.time()
-        for q in self.queues[1:]:
+        # join only queues that have consumers: queues[1] .. queues[num_stages-1]
+        for q in self.queues[1:self.num_stages]:
             if timeout is None:
                 q.join()
             else:
-                # approximate timed join by polling unfinished_tasks
                 end = start + timeout
                 while getattr(q, "unfinished_tasks", 0) > 0 and time.time() < end:
                     time.sleep(0.05)
@@ -163,11 +163,15 @@ class ParallelPipeline:
     def print_metrics(self):
         snap = self.metrics.snapshot()
         lines = []
-        # include queue sizes between stages; queues indices 1..num_stages correspond to after stage 0..num_stages-1
+        # include queue sizes between stages; only for queues with consumers (queues[1..num_stages-1])
         for entry in snap:
             idx = entry["stage"]
             q_idx = idx + 1
-            qsize = self.queues[q_idx].qsize() if q_idx < len(self.queues) else 0
+            # only report queue_size when the queue has a downstream consumer
+            if 1 <= q_idx < len(self.queues) - 1:
+                qsize = self.queues[q_idx].qsize()
+            else:
+                qsize = 0
             lines.append(f"Stage {idx+1}: processed={entry['processed']}, errors={entry['errors']}, avg_latency={entry['avg_latency']:.4f}s, queue_size={qsize}")
         print("\n".join(lines))
 
