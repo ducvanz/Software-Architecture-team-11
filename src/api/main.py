@@ -22,7 +22,7 @@ if os.name == "nt":
         pass
 
 # =========================
-# Cấu hình thư mục (file ở repo/src/api/main.py → .., .. về gốc repo)
+# Cấu hình thư mục
 # =========================
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 INPUT_DIR = os.path.join(ROOT_DIR, "data", "input")
@@ -36,14 +36,14 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 app = FastAPI(title="Pipes & Filters API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # dev: mở hết; deploy nên giới hạn
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # =========================
-# Mô hình Pydantic
+# Pydantic models
 # =========================
 class StepConfig(BaseModel):
     name: str
@@ -54,12 +54,12 @@ class ProcessRequest(BaseModel):
     steps: List[StepConfig]
 
 # =========================
-# Tiện ích IO ảnh
+# IO utils
 # =========================
 def read_image_from_disk(path: str):
     if not os.path.exists(path):
         return None
-    data = np.fromfile(path, dtype=np.uint8)    # hỗ trợ unicode path trên Windows
+    data = np.fromfile(path, dtype=np.uint8)
     img = cv2.imdecode(data, cv2.IMREAD_COLOR)  # BGR
     return img
 
@@ -71,8 +71,7 @@ def save_png_to_disk(img, path_out: str):
         f.write(buf.tobytes())
 
 # =========================
-# Các FILTER đúng theo repo của bạn
-# (tự cài đặt tối thiểu để DEMO chạy chắc chắn)
+# Filters (theo repo)
 # =========================
 class FilterBase:
     name = "Base"
@@ -80,7 +79,6 @@ class FilterBase:
         return img
 
 class Converter(FilterBase):
-    """Đổi không gian màu."""
     name = "Converter"
     def apply(self, img, mode: str = "BGR2GRAY", **kwargs):
         m = (mode or "BGR2GRAY").upper()
@@ -90,7 +88,6 @@ class Converter(FilterBase):
             return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         if m == "BGR2HSV":
             return cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        # không hỗ trợ thì trả nguyên
         return img
 
 class HorizontalFlip(FilterBase):
@@ -120,22 +117,24 @@ class Resize(FilterBase):
         return img
 
 class Watermark(FilterBase):
-    """Watermark text đơn giản; nếu có ảnh PNG (alpha) thì dán ảnh."""
     name = "Watermark"
     def apply(self, img, text: str = "", image: str = "", pos: str = "bottom-right",
               opacity: float = 0.5, scale: float = 1.0, **kwargs):
         out = img.copy()
         h, w = out.shape[:2]
 
-        # Ưu tiên watermark ảnh PNG nếu cung cấp đường dẫn hợp lệ
+        # ưu tiên watermark ảnh
         if image:
             wm_path = os.path.join(ROOT_DIR, image) if not os.path.isabs(image) else image
             if os.path.exists(wm_path):
-                wm = cv2.imread(wm_path, cv2.IMREAD_UNCHANGED)  # có thể RGBA
+                wm = cv2.imread(wm_path, cv2.IMREAD_UNCHANGED)
                 if wm is not None:
                     if scale and scale != 1.0:
-                        wm = cv2.resize(wm, (max(1, int(wm.shape[1]*scale)), max(1, int(wm.shape[0]*scale))), interpolation=cv2.INTER_AREA)
-                    # tách alpha
+                        wm = cv2.resize(
+                            wm,
+                            (max(1, int(wm.shape[1] * scale)), max(1, int(wm.shape[0] * scale))),
+                            interpolation=cv2.INTER_AREA,
+                        )
                     if wm.shape[2] == 4:
                         alpha = wm[:, :, 3] / 255.0 * float(opacity)
                         wm_rgb = wm[:, :, :3]
@@ -146,22 +145,19 @@ class Watermark(FilterBase):
                     x, y = _place_xy(pos, w, h, ww, hh)
                     roi = out[y:y+hh, x:x+ww]
                     if roi.shape[0] == hh and roi.shape[1] == ww:
-                        # blend
                         for c in range(3):
                             roi[:, :, c] = (alpha * wm_rgb[:, :, c] + (1 - alpha) * roi[:, :, c]).astype(np.uint8)
                         out[y:y+hh, x:x+ww] = roi
-                    return out  # nếu dùng ảnh thì kết thúc ở đây
+                    return out
 
-        # nếu không có ảnh → viết chữ
+        # watermark text
         if text:
             fs = 1.0 * float(scale)
             th = max(1, int(2 * scale))
             (tw, th_text), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, fs, th)
             x, y = _place_xy(pos, w, h, tw, th_text)
-            y = max(th_text + 5, y + th_text)  # baseline
-            # shadow
+            y = max(th_text + 5, y + th_text)
             cv2.putText(out, text, (x+2, y+2), cv2.FONT_HERSHEY_SIMPLEX, fs, (0,0,0), th+1, cv2.LINE_AA)
-            # text
             overlay = out.copy()
             cv2.putText(overlay, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, fs, (255,255,255), th, cv2.LINE_AA)
             cv2.addWeighted(overlay, float(opacity), out, 1.0 - float(opacity), 0, out)
@@ -178,20 +174,17 @@ def _place_xy(pos: str, W: int, H: int, w: int, h: int):
         return margin, max(margin, H - h - margin)
     if pos == "center":
         return max(0, (W - w)//2), max(0, (H - h)//2)
-    # bottom-right (default)
-    return max(margin, W - w - margin), max(margin, H - h - margin)
+    return max(margin, W - w - margin), max(margin, H - h - margin)  # bottom-right
 
 class OutputFilter(FilterBase):
-    """Không làm gì; để giữ chỗ cuối pipeline (nếu FE muốn)."""
     name = "OutputFilter"
 
-# RemoveBackground: chỉ đăng ký nếu có rembg
+# RemoveBackground (nếu có rembg)
 try:
     from rembg import remove as _rembg_remove  # type: ignore
     class RemoveBackground(FilterBase):
         name = "RemoveBackground"
         def apply(self, img, **kwargs):
-            # rembg dùng RGB; chuyển đổi và quay lại BGR
             rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             out = _rembg_remove(rgb)
             bgr = cv2.cvtColor(out, cv2.COLOR_RGB2BGR)
@@ -200,9 +193,7 @@ try:
 except Exception:
     _HAVE_REMBG = False
 
-# =========================
-# Registry FILTERS (đúng tên theo repo)
-# =========================
+# Registry
 FILTERS: Dict[str, Dict] = {
     "Converter": {"cls": Converter, "params": {
         "mode": {"type": "enum", "options": ["BGR2GRAY", "BGR2RGB", "BGR2HSV"], "default": "BGR2GRAY"}
@@ -211,36 +202,37 @@ FILTERS: Dict[str, Dict] = {
     "Resize": {"cls": Resize, "params": {
         "width":  {"type": "int", "min": 1, "max": 8192, "default": None, "step": 1},
         "height": {"type": "int", "min": 1, "max": 8192, "default": None, "step": 1},
-        "scale":  {"type": "float", "min": 0.1, "max": 4.0, "default": None, "step": 0.1}
+        "scale":  {"type": "float",  "min": 0.1, "max": 4.0, "default": None, "step": 0.1}
     }},
     "Watermark": {"cls": Watermark, "params": {
         "text":    {"type": "string", "default": ""},
-        "image":   {"type": "string", "default": ""},  # đường dẫn tương đối từ ROOT_DIR (vd: "dir/wm.png")
-        "pos":     {"type": "enum",   "options": ["top-left","top-right","bottom-left","bottom-right","center"], "default": "bottom-right"},
-        "opacity": {"type": "float",  "min": 0.0, "max": 1.0, "default": 0.5, "step": 0.05},
-        "scale":   {"type": "float",  "min": 0.1, "max": 3.0, "default": 1.0, "step": 0.1}
+        "image":   {"type": "string", "default": ""},
+        "pos":     {"type": "enum", "options": ["top-left","top-right","bottom-left","bottom-right","center"], "default": "bottom-right"},
+        "opacity": {"type": "float", "min": 0.0, "max": 1.0, "default": 0.5, "step": 0.05},
+        "scale":   {"type": "float", "min": 0.1, "max": 3.0, "default": 1.0, "step": 0.1}
     }},
     "OutputFilter": {"cls": OutputFilter, "params": {}},
 }
-
 if _HAVE_REMBG:
     FILTERS["RemoveBackground"] = {"cls": RemoveBackground, "params": {}}
-# Nếu chưa cài rembg, filter này sẽ không có trong /api/filters (đúng ý “đừng làm lỗi”).
 
 # =========================
-# Job state (in-memory) — dùng Manager lazy cho an toàn spawn
+# Store dùng Manager — LAZY (không tạo lúc import)
 # =========================
 _manager = None
-def get_manager():
-    global _manager
+_JOBS = None
+
+def get_store():
+    """Khởi tạo Manager + JOBS đúng lúc (chỉ trong process cha)."""
+    global _manager, _JOBS
     if _manager is None:
         _manager = Manager()
-    return _manager
-
-_JOBS: Dict[str, Dict] = {}  # chỉ dùng trong process API
+    if _JOBS is None:
+        _JOBS = _manager.dict()
+    return _manager, _JOBS
 
 # =========================
-# Workers theo kiến trúc Pipes & Filters
+# Workers
 # =========================
 def worker_filter(in_q: Queue, out_q: Queue, filt_cls, step_label, job_id: str, state_map, worker_name: str, params: Dict):
     filt = filt_cls()
@@ -254,14 +246,11 @@ def worker_filter(in_q: Queue, out_q: Queue, filt_cls, step_label, job_id: str, 
         state_map[filename] = {"state": "processing", "current_filter": step_label, "worker": worker_name}
         try:
             out = filt.apply(img, **(params or {}))
-            # một số filter có thể trả ảnh xám → chuẩn hoá về 3 kênh trước khi ghi nếu cần
             if out is not None and out.ndim == 2:
                 out = cv2.cvtColor(out, cv2.COLOR_GRAY2BGR)
             out_q.put((filename, out))
         except Exception as ex:
-            state_map[filename] = {
-                "state": "error", "current_filter": step_label, "worker": worker_name, "error": str(ex)
-            }
+            state_map[filename] = {"state": "error", "current_filter": step_label, "worker": worker_name, "error": str(ex)}
 
 def worker_sink(in_q: Queue, job_id: str, state_map, outputs_list):
     while True:
@@ -277,13 +266,12 @@ def worker_sink(in_q: Queue, job_id: str, state_map, outputs_list):
             outputs_list.append(out_name)
             state_map[filename] = {"state": "done", "current_filter": None, "worker": "sink"}
         except Exception as ex:
-            state_map[filename] = {
-                "state": "error", "current_filter": "sink", "worker": "sink", "error": str(ex)
-            }
+            state_map[filename] = {"state": "error", "current_filter": "sink", "worker": "sink", "error": str(ex)}
 
-def run_pipeline_job(job_id: str, images: List[str], steps: List[Dict]):
+def run_pipeline_job(job_id: str, images: List[str], steps: List[Dict], JOBS):
+    """Hàm chạy trong process con – dùng proxy JOBS truyền từ cha (không đụng vào globals)."""
     try:
-        job = _JOBS[job_id]
+        job = JOBS[job_id]
         queues: List[Queue] = [Queue()]
         procs: List[Process] = []
 
@@ -306,7 +294,7 @@ def run_pipeline_job(job_id: str, images: List[str], steps: List[Dict]):
             p.start()
             procs.append(p)
 
-        # sink (lưu file)
+        # sink
         sink_in = queues[-1]
         sink_p = Process(target=worker_sink, args=(sink_in, job_id, state_map, outputs_list))
         sink_p.start()
@@ -331,13 +319,13 @@ def run_pipeline_job(job_id: str, images: List[str], steps: List[Dict]):
             p.join()
 
         job["status"] = "done"
-        _JOBS[job_id] = job
+        JOBS[job_id] = job
     except Exception as ex:
-        job = _JOBS.get(job_id)
+        job = JOBS.get(job_id, None)
         if job is not None:
             job["status"] = "error"
             job["error"] = str(ex)
-            _JOBS[job_id] = job
+            JOBS[job_id] = job
 
 # =========================
 # Endpoints
@@ -348,10 +336,7 @@ def root():
 
 @app.get("/api/filters")
 def list_filters():
-    return [
-        {"name": name, "params": meta.get("params", {})}
-        for name, meta in FILTERS.items()
-    ]
+    return [{"name": name, "params": meta.get("params", {})} for name, meta in FILTERS.items()]
 
 @app.get("/api/images")
 def list_input_images():
@@ -385,32 +370,35 @@ async def upload_images(files: List[UploadFile] = File(...)):
 
 @app.post("/api/process")
 async def start_process(payload: ProcessRequest):
-    # validate step names
+    # validate
     for s in payload.steps:
         if s.name not in FILTERS:
             raise HTTPException(status_code=400, detail=f"Unknown filter: {s.name}")
 
-    # khởi tạo job
+    # tạo store lazily
+    mgr, JOBS = get_store()
+
+    # khởi tạo job (proxy)
     job_id = uuid4().hex[:8]
-    mgr = get_manager()
-    _JOBS[job_id] = {
+    JOBS[job_id] = {
         "status": "running",
-        "images": mgr.dict(),   # filename -> status dict (proxy)
-        "outputs": mgr.list(),  # danh sách tên file output (proxy)
+        "images": mgr.dict(),
+        "outputs": mgr.list(),
         "error": None,
         "steps": [s.dict() for s in payload.steps],
         "inputs": payload.images,
     }
 
-    # chạy pipeline trong process riêng (để API trả về ngay job_id)
-    p = Process(target=run_pipeline_job, args=(job_id, payload.images, [s.dict() for s in payload.steps]))
+    # chạy pipeline (truyền JOBS proxy vào)
+    p = Process(target=run_pipeline_job, args=(job_id, payload.images, [s.dict() for s in payload.steps], JOBS))
     p.start()
 
     return {"job_id": job_id, "status": "running"}
 
 @app.get("/api/jobs/{job_id}/status")
 def job_status(job_id: str):
-    job = _JOBS.get(job_id)
+    _, JOBS = get_store()
+    job = JOBS.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     images_state = dict(job["images"])
@@ -424,14 +412,12 @@ def job_status(job_id: str):
 
 @app.get("/api/jobs/{job_id}/outputs")
 def job_outputs(job_id: str):
-    job = _JOBS.get(job_id)
+    _, JOBS = get_store()
+    job = JOBS.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     outputs = list(job["outputs"])
-    return {
-        "job_id": job_id,
-        "outputs": [{"name": n, "url": f"/api/file/output/{n}"} for n in outputs]
-    }
+    return {"job_id": job_id, "outputs": [{"name": n, "url": f"/api/file/output/{n}"} for n in outputs]}
 
 @app.get("/api/file/{kind}/{filename}")
 def get_file(kind: str, filename: str):
@@ -445,13 +431,13 @@ def get_file(kind: str, filename: str):
         raise HTTPException(status_code=400, detail="Invalid kind")
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(path)
+    return FileResponse(path, headers={"Cache-Control": "no-store, max-age=0"})
 
 @app.get("/favicon.ico", include_in_schema=False)
 def favicon():
     return Response(status_code=204)
 
-# (tuỳ chọn) cho phép chạy trực tiếp: python src/api/main.py
+# chạy trực tiếp (tuỳ chọn)
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("src.api.main:app", host="0.0.0.0", port=8000, reload=True)
