@@ -1,0 +1,7 @@
+- Mở một cmd ở thư mục gốc chạy môi trường be
+python -m uvicorn src.api.main:app --host 127.0.0.1 --port 8000 --reload
+
+- Mở một cmd khác cd vào thư mục demo/vite-project để chạy fe
+    yarn dev
+
+    

@@ -1,24 +1,38 @@
 import axios from "axios";
 
 // đổi nếu backend khác host/port
-export const API_BASE = "http://127.0.0.1:8000";
+const API_BASE = "http://127.0.0.1:8000";
 
-export const listFilters = async () =>
+const listFiltersApi = async () =>
   (await axios.get(`${API_BASE}/api/filters`)).data;
-export const listImages = async () =>
+const listImagesApi = async () =>
   (await axios.get(`${API_BASE}/api/images`)).data.images || [];
-export const listOutputs = async () =>
+const listOutputsApi = async () =>
   (await axios.get(`${API_BASE}/api/outputs`)).data.outputs || [];
 
-export const uploadFiles = async (files) => {
+const uploadFilesApi = async (files) => {
   const form = new FormData();
-  for (const f of files) form.append("files", f);
+  for (const f of files) {
+    form.append("files", f);
+  }
+
   return (await axios.post(`${API_BASE}/api/upload`, form)).data;
 };
 
-export const startProcess = async (payload) =>
+const startProcessApi = async (payload) =>
   (await axios.post(`${API_BASE}/api/process`, payload)).data; // {job_id, status}
-export const jobStatus = async (jobId) =>
+const jobStatusApi = async (jobId) =>
   (await axios.get(`${API_BASE}/api/jobs/${jobId}/status`)).data;
-export const jobOutputs = async (jobId) =>
+const jobOutputsApi = async (jobId) =>
   (await axios.get(`${API_BASE}/api/jobs/${jobId}/outputs`)).data.outputs || [];
+
+export {
+  API_BASE,
+  listFiltersApi,
+  listImagesApi,
+  listOutputsApi,
+  uploadFilesApi,
+  startProcessApi,
+  jobStatusApi,
+  jobOutputsApi,
+};

@@ -1,0 +1,38 @@
+.outputs-list-container {
+  box-sizing: border-box;
+  padding: 16px;
+  border: 1px solid #eee;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  background-color: #fff;
+}
+
+.output-images-area {
+  padding-inline: 8px;
+}
+
+.output-image-card {
+  background: #fafafa;
+  border: 1px solid #eee;
+  border-radius: 12px;
+  border-radius: 10px;
+  box-sizing: border-box;
+  padding: 8px;
+  cursor: pointer;
+}
+
+.output-image-wrapper {
+  width: 100%;
+  aspect-ratio: 1/1; /* square box */
+  overflow: hidden;
+  border-radius: 8px;
+}
+
+.output-image-wrapper > img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover; /* crop to fit the box neatly */
+  display: block;
+}

@@ -1,0 +1,19 @@
+.run-panel-container {
+  box-sizing: border-box;
+  padding: 16px;
+  border: 1px solid #eee;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  background-color: #fff;
+}
+
+.log-area {
+  background: #f7f7f7;
+  border: 1px solid #eee;
+  padding: 8px;
+  border-radius: 10px;
+  max-height: 240px;
+  overflow: auto;
+}

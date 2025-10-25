@@ -1,0 +1,106 @@
+.filters-panel-container {
+  box-sizing: border-box;
+  padding: 16px;
+  border: 1px solid #eee;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  background-color: #fff;
+}
+
+/* List of available filters */
+.filters-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 300px;
+  overflow: auto;
+}
+
+.filter-card {
+  box-sizing: border-box;
+  padding: 12px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  background-color: #fafafa;
+}
+
+.params-block {
+  margin-top: 6px;
+}
+.params-title {
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 4px;
+}
+
+div.json {
+  background: #f6f8fa;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  max-height: 12rem;
+  overflow: auto;
+}
+
+.params-none {
+  color: #999;
+  font-style: italic;
+}
+
+/* Pipeline editor row */
+.pipeline-row {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.filter-name {
+  width: 220px;
+  min-width: 200px;
+}
+
+/* JSON editor look */
+.json-editor-wrap {
+  flex: 1 1 400px;
+  min-width: 300px;
+}
+
+.json-editor {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace !important;
+  /* font-size: 12px; */
+  /* line-height: 1.45; */
+}
+
+.json-editor-actions {
+  margin-top: 6px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.json-error {
+  margin-left: 8px;
+}
+.json-ok {
+  margin-left: 8px;
+}
+
+/* Corrected class name (was .romove-filter-button) */
+.remove-filter-button {
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid #ddd;
+  background: #fff;
+}

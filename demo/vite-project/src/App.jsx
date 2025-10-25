@@ -1,11 +1,11 @@
 import { useState } from "react";
 import "./App.css";
-import ImagesList from "./components/ImagesList";
-import FiltersPanel from "./components/FiltersPanel";
-import RunPanel from "./components/RunPanel";
-import OutputsList from "./components/OutputsList";
+import ImagesList from "./components/ImagesList/ImagesList";
+import FiltersPanel from "./components/FiltersPanel/FiltersPanel";
+import RunPanel from "./components/RunPanel/RunPanel";
+import OutputsList from "./components/OutputsList/OutputsList";
 
-export default function App() {
+const App = () => {
   const [selectedImages, setSelectedImages] = useState([]);
   const [steps, setSteps] = useState([]);
   const [outsBumped, setOutsBumped] = useState([]);
@@ -27,4 +27,6 @@ export default function App() {
       <OutputsList externalOutputs={outsBumped} />
     </main>
   );
-}
+};
+
+export default App;
