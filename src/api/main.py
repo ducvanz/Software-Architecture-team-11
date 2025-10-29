@@ -10,6 +10,8 @@ import cv2
 
 from multiprocessing import Process, Queue, Manager, current_process
 import datetime
+from fastapi import WebSocket, WebSocketDisconnect
+import asyncio
 
 # =========================
 # Windows multiprocessing (ổn định khi --reload)
@@ -232,6 +234,8 @@ def get_store():
         _JOBS = _manager.dict()
     return _manager, _JOBS
 
+LOG_MAX = 2000  # max log entries to keep in job["logs"]
+
 def _now_iso():
     return datetime.datetime.utcnow().isoformat() + "Z"
 
@@ -246,6 +250,14 @@ def _append_log(logs_list, level, stage_idx, stage_label, worker_name, filename,
             "file": filename,
             "msg": message,
         })
+        # trim oldest entries when exceed limit (best-effort)
+        try:
+            while len(logs_list) > LOG_MAX:
+                # Manager().list supports pop(0)
+                logs_list.pop(0)
+        except Exception:
+            # ignore trim errors (race)
+            pass
     except Exception:
         # best-effort logging; avoid breaking worker on logging failure
         pass
@@ -253,28 +265,34 @@ def _append_log(logs_list, level, stage_idx, stage_label, worker_name, filename,
 # =========================
 # Workers
 # =========================
-def worker_filter(in_q: Queue, out_q: Queue, filt_cls, step_label, stage_idx: int, job_id: str, state_map, worker_name: str, params: Dict, logs_list):
+def worker_filter(in_q: Queue, out_q: Queue, filt_cls, step_label, stage_idx: int, job_id: str, state_map, worker_name: str, params: Dict, logs_list, next_step_label: Optional[str] = None):
     filt = filt_cls()
-    _ = current_process().name
+    proc_name = current_process().name
+    worker_label = worker_name or proc_name
     while True:
         item = in_q.get()
         if item is None:
             # propagate sentinel and log
-            _append_log(logs_list, "info", stage_idx, step_label, worker_name, None, "sentinel received, exiting")
-            out_q.put(None)
+            _append_log(logs_list, "info", stage_idx, step_label, worker_label, None, "sentinel received, exiting")
+            if out_q:
+                out_q.put(None)
             break
         filename, img = item
-        state_map[filename] = {"state": "processing", "current_filter": step_label, "worker": worker_name}
-        _append_log(logs_list, "info", stage_idx, step_label, worker_name, filename, "received")
+        state_map[filename] = {"state": "processing", "current_filter": step_label, "worker": worker_label, "ts": _now_iso()}
+        _append_log(logs_list, "info", stage_idx, step_label, worker_label, filename, "received")
         try:
             out = filt.apply(img, **(params or {}))
-            if out is not None and out.ndim == 2:
+            if out is not None and getattr(out, "ndim", None) == 2:
                 out = cv2.cvtColor(out, cv2.COLOR_GRAY2BGR)
-            _append_log(logs_list, "info", stage_idx, step_label, worker_name, filename, "processed")
-            out_q.put((filename, out))
+            # mark queued for next stage (so UI can show it moved to next column)
+            next_label = next_step_label or None
+            state_map[filename] = {"state": "queued", "current_filter": next_label, "worker": None, "ts": _now_iso()}
+            _append_log(logs_list, "info", stage_idx, step_label, worker_label, filename, f"processed -> queued for {next_label or 'sink'}")
+            if out_q is not None:
+                out_q.put((filename, out))
         except Exception as ex:
-            state_map[filename] = {"state": "error", "current_filter": step_label, "worker": worker_name, "error": str(ex)}
-            _append_log(logs_list, "error", stage_idx, step_label, worker_name, filename, f"error: {ex}")
+            state_map[filename] = {"state": "error", "current_filter": step_label, "worker": worker_label, "error": str(ex), "ts": _now_iso()}
+            _append_log(logs_list, "error", stage_idx, step_label, worker_label, filename, f"error: {ex}")
 
 def worker_sink(in_q: Queue, job_id: str, state_map, outputs_list, logs_list, sink_name="sink"):
     while True:
@@ -290,10 +308,10 @@ def worker_sink(in_q: Queue, job_id: str, state_map, outputs_list, logs_list, si
         try:
             save_png_to_disk(img, out_path)
             outputs_list.append(out_name)
-            state_map[filename] = {"state": "done", "current_filter": None, "worker": "sink"}
+            state_map[filename] = {"state": "done", "current_filter": None, "worker": "sink", "ts": _now_iso()}
             _append_log(logs_list, "info", None, "sink", sink_name, filename, f"saved -> {out_name}")
         except Exception as ex:
-            state_map[filename] = {"state": "error", "current_filter": "sink", "worker": "sink", "error": str(ex)}
+            state_map[filename] = {"state": "error", "current_filter": "sink", "worker": "sink", "error": str(ex), "ts": _now_iso()}
             _append_log(logs_list, "error", None, "sink", sink_name, filename, f"error: {ex}")
 
 def run_pipeline_job(job_id: str, images: List[str], steps: List[Dict], JOBS):
@@ -316,9 +334,11 @@ def run_pipeline_job(job_id: str, images: List[str], steps: List[Dict], JOBS):
             out_q = Queue()
             queues.append(out_q)
             worker_name = f"worker-{s['name']}-{i+1}"
+            # determine next stage label (or None -> sink)
+            next_label = steps[i+1]["name"] if (i+1) < len(steps) else "sink"
             p = Process(
                 target=worker_filter,
-                args=(in_q, out_q, meta["cls"], s["name"], i, job_id, state_map, worker_name, s.get("params") or {}, logs_list)
+                args=(in_q, out_q, meta["cls"], s["name"], i, job_id, state_map, worker_name, s.get("params") or {}, logs_list, next_label)
             )
             p.start()
             procs.append(p)
@@ -335,10 +355,11 @@ def run_pipeline_job(job_id: str, images: List[str], steps: List[Dict], JOBS):
             path = os.path.join(INPUT_DIR, fn)
             img = read_image_from_disk(path)
             if img is None:
-                state_map[fn] = {"state": "error", "current_filter": "load", "worker": "loader", "error": "cannot read"}
+                state_map[fn] = {"state": "error", "current_filter": "load", "worker": "loader", "error": "cannot read", "ts": _now_iso()}
                 _append_log(logs_list, "error", None, "loader", "loader", fn, "cannot read")
                 continue
-            state_map[fn] = {"state": "queued", "current_filter": None, "worker": None}
+            # queued for first stage (loader)
+            state_map[fn] = {"state": "queued", "current_filter": None, "worker": None, "ts": _now_iso()}
             _append_log(logs_list, "info", None, "loader", "loader", fn, "queued")
             q0.put((fn, img))
 
@@ -474,6 +495,64 @@ def get_file(kind: str, filename: str):
 @app.get("/favicon.ico", include_in_schema=False)
 def favicon():
     return Response(status_code=204)
+
+@app.websocket("/ws/jobs/{job_id}")
+async def job_ws(websocket: WebSocket, job_id: str):
+    """
+    WebSocket endpoint: gửi snapshot job (images state + logs + status) định kỳ.
+    Frontend có thể kết nối ws://host:8000/ws/jobs/{job_id}
+    """
+    await websocket.accept()
+    try:
+        while True:
+            _, JOBS = get_store()
+            job = JOBS.get(job_id)
+            if not job:
+                # nếu job chưa tồn tại, gửi 404-like message rồi chờ
+                try:
+                    await websocket.send_json({"job_id": job_id, "status": "not_found"})
+                except Exception:
+                    break
+                await asyncio.sleep(0.5)
+                continue
+            
+            # convert proxy objects -> plain JSON-serializable
+            try:
+                images = dict(job.get("images", {}))
+            except Exception:
+                images = {}
+            try:
+                logs = list(job.get("logs", []))
+            except Exception:
+                logs = []
+            try:
+                outputs = list(job.get("outputs", []))
+            except Exception:
+                outputs = []
+
+            payload = {
+                "job_id": job_id,
+                "status": job.get("status"),
+                "images": images,
+                "steps": job.get("steps", []),
+                "logs": logs,
+                "error": job.get("error"),
+                "outputs": outputs,
+            }
+
+            try:
+                await websocket.send_json(payload)
+            except Exception:
+                # socket broken
+                break
+
+            # throttle send frequency
+            await asyncio.sleep(0.3)
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        # swallow to avoid crashing server loop
+        pass
 
 # chạy trực tiếp (tuỳ chọn)
 if __name__ == "__main__":
