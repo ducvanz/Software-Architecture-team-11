@@ -12,6 +12,7 @@ const RunPanel = ({ selectedImages, steps, onDone }) => {
   const [displayMap, setDisplayMap] = useState({}); // map hiển thị (đã xử lý sink)
   const timerRef = useRef(null);
   const historyRef = useRef({}); // { [filename]: [{state, current_filter, worker, ts}] }
+  const lastLogCountRef = useRef(0); // <-- track logs consumed
 
   const append = (line) => setLog((x) => (x ? x + "\n" + line : line));
 
@@ -65,6 +66,19 @@ const RunPanel = ({ selectedImages, steps, onDone }) => {
     setDisplayMap(out);
   };
 
+  const formatLogEntry = (e) => {
+    const ts = e.ts || "";
+    const idx =
+      e.stage_idx !== null && e.stage_idx !== undefined
+        ? `#${e.stage_idx + 1}`
+        : "";
+    const stage = e.stage ? `stage:${e.stage}` : "";
+    const worker = e.worker ? `worker:${e.worker}` : "";
+    const file = e.file ? `${e.file}` : "";
+    const level = e.level ? e.level.toUpperCase() : "INFO";
+    return `[${ts}] [${level}] ${idx} ${stage} ${worker} ${file} - ${e.msg}`;
+  };
+
   const run = async () => {
     if (!Array.isArray(selectedImages) || selectedImages.length === 0)
       return alert("Chọn ít nhất 1 ảnh");
@@ -75,6 +89,7 @@ const RunPanel = ({ selectedImages, steps, onDone }) => {
     setDisplayMap({});
     setJobId(null);
     historyRef.current = {};
+    lastLogCountRef.current = 0;
     setRunning(true);
     append("Gửi job...");
 
@@ -96,6 +111,14 @@ const RunPanel = ({ selectedImages, steps, onDone }) => {
           for (const [name, snap] of Object.entries(imgs))
             pushHistory(name, snap);
           recomputeDisplayMap(imgs);
+
+          // append new logs (if any)
+          const logs = Array.isArray(st.logs) ? st.logs : [];
+          if (logs.length > lastLogCountRef.current) {
+            const newLogs = logs.slice(lastLogCountRef.current);
+            for (const l of newLogs) append(formatLogEntry(l));
+            lastLogCountRef.current = logs.length;
+          }
 
           if (st.status !== "running") {
             append(JSON.stringify(st));
